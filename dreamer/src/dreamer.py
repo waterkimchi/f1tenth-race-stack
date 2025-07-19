@@ -57,6 +57,8 @@ class Dreamer(nn.Module):
         )[config.expl_behavior]().to(self._config.device)
 
     def __call__(self, obs, reset, state=None, training=True):
+        print(f"[DEBUG] Agent step count: {self._step}")
+        print(f"[DEBUG] Dataset: {self._dataset}")
         step = self._step
         if training:
             steps = (
@@ -67,9 +69,11 @@ class Dreamer(nn.Module):
             print(f"Training steps: {range(steps)}")
             for _ in range(steps):
                 print("stupid baka")
-                print("self._dataset:", self._dataset)
-                print("inner generator:", self._dataset.gi_frame.f_locals['generator'])  # Inspect the inner generator if possible
-                tmp = next(self._dataset)
+                try:
+                    tmp = next(self._dataset)
+                except StopIteration:
+                    print(" Dataset is empty, skipping training update.")
+                    break
                 self._train(tmp)
                 self._update_count += 1
                 self._metrics["update_count"] = self._update_count
@@ -172,8 +176,8 @@ def make_env(config, mode, gui=True):
         raise ValueError(f"Unknown mode for racecar environment: {mode}")
     return env
 
-
 def main(config):
+    torch.backends.cudnn.benchmark = True
     tools.set_seed_everywhere(config.seed)
     if config.deterministic_run:
         tools.enable_deterministic_run()
@@ -189,6 +193,7 @@ def main(config):
     config.traindir.mkdir(parents=True, exist_ok=True)
     config.evaldir.mkdir(parents=True, exist_ok=True)
     step = count_steps(config.traindir)
+    print("Steps in train directory:", step)
     # step in logger is environmental step
     logger = tools.Logger(logdir, config.action_repeat * step)
 
@@ -267,7 +272,9 @@ def main(config):
         tools.recursively_load_optim_state_dict(agent, checkpoint["optims_state_dict"])
         agent._should_pretrain._once = False
 
-    # make sure eval will be executed once after config.steps
+    print(len(train_eps), "episodes in train_eps after loading.")
+
+    print(f"{agent._step} < {config.steps}")
     while agent._step < config.steps + config.eval_every:
         logger.write()
         if config.eval_episode_num > 0:
@@ -287,10 +294,6 @@ def main(config):
                 video_pred = agent._wm.video_pred(next(eval_dataset))
                 logger.video("eval_openl", to_np(video_pred))
         print("Start training.")
-        if len(train_eps) < 5:
-            print("Waiting for more experience before training...")
-            continue  # Skip training step
-        print("Replay buffer length:", len(train_eps))
         state = tools.simulate(
             agent,
             train_envs,
@@ -306,6 +309,7 @@ def main(config):
             "optims_state_dict": tools.recursively_collect_optim_state_dict(agent),
         }
         torch.save(items_to_save, logdir / "latest.pt")
+    print("Training finished, saving final model.")
     for env in train_envs + eval_envs:
         try:
             env.close()
